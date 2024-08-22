@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::{Profile, Provider, Metadata};
 use crate::coalesce::Coalescible;
-use crate::value::{Map, Dict};
+use crate::value::{Dict, Map, Value};
 use crate::error::Error;
 use crate::util::nest;
 
@@ -11,6 +11,12 @@ use uncased::{Uncased, UncasedStr};
 crate::util::cloneable_fn_trait!(
     FilterMap: for<'a> Fn(&'a UncasedStr) -> Option<Uncased<'a>> + 'static
 );
+
+crate::util::cloneable_fn_trait!(
+    (ParserCloneable) Parser: for<'a> Fn(&'a str) -> Value
+);
+
+
 
 /// A [`Provider`] that sources its values from environment variables.
 ///
@@ -110,6 +116,7 @@ pub struct Env {
     prefix: Option<String>,
     /// We use this to generate better metadata when available.
     lowercase: bool,
+    parser_fn: Box<dyn Parser>,
 }
 
 impl fmt::Debug for Env {
@@ -125,6 +132,7 @@ impl Env {
             profile: Profile::Default,
             prefix: None,
             lowercase: true,
+            parser_fn: Box::new(|v| v.parse().expect("infallible")),
         }
     }
 
@@ -137,7 +145,16 @@ impl Env {
             profile: self.profile,
             prefix: self.prefix,
             lowercase: true,
+            parser_fn: self.parser_fn,
         }
+    }
+
+    /// Adds a custom parser function for environment variable values.
+    pub fn parser<F: Clone + 'static>(mut self, f: F) -> Self
+        where F: for<'a> Fn(&'a str) -> Value
+    {
+        self.parser_fn = Box::new(f);
+        self
     }
 
     /// Constructs and `Env` provider that does not filter or map any
@@ -633,7 +650,9 @@ impl Provider for Env {
     fn data(&self) -> Result<Map<Profile, Dict>, Error> {
         let mut dict = Dict::new();
         for (k, v) in self.iter() {
-            let nested_dict = nest(k.as_str(), v.parse().expect("infallible"))
+            let parsed_value = (self.parser_fn)(&v);
+
+            let nested_dict = nest(k.as_str(), parsed_value)
                 .into_dict()
                 .expect("key is non-empty: must have dict");
 
